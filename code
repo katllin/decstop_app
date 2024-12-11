@@ -1,0 +1,331 @@
+import sys
+import sqlite3
+from operator import itemgetter
+
+from PyQt5.QtWidgets import (QApplication, QWidget, QLabel, QPushButton, QVBoxLayout, QHBoxLayout, QLineEdit, QComboBox, QMessageBox, QMainWindow, QGridLayout, QTableWidget, QTableWidgetItem, QDialog, QFileDialog)
+
+from PyQt5.QtGui import QFont
+
+class AddDepositorWindow(QWidget):
+    def __init__(self, main_window):
+        super().__init__()
+        self.main_window = main_window
+        self.setWindowTitle("Добавить вкладчика")
+        name_label = QLabel("Имя:")
+        self.name_edit = QLineEdit()
+        type_label = QLabel("Тип вклада:")
+        self.type_combo = QComboBox()
+        self.type_combo.addItems(["Обычный", "Бонусный"])
+        amount_label = QLabel("Сумма вклада:")
+        self.amount_edit = QLineEdit()
+        bonus_label = QLabel("Сумма бонуса:")
+        self.bonus_edit = QLineEdit()
+        self.bonus_edit.setEnabled(False)
+
+        self.type_combo.currentIndexChanged.connect(self.type_changed)
+
+        add_button = QPushButton("Добавить")
+        add_button.clicked.connect(self.add_depositor)
+        cancel_button = QPushButton("Отмена")
+        cancel_button.clicked.connect(self.close)
+
+        layout = QGridLayout()
+        layout.addWidget(name_label, 0, 0)
+        layout.addWidget(self.name_edit, 0, 1)
+        layout.addWidget(type_label, 1, 0)
+        layout.addWidget(self.type_combo, 1, 1)
+        layout.addWidget(amount_label, 2, 0)
+        layout.addWidget(self.amount_edit, 2, 1)
+        layout.addWidget(bonus_label, 3, 0)
+        layout.addWidget(self.bonus_edit, 3, 1)
+        layout.addWidget(add_button, 4, 0)
+        layout.addWidget(cancel_button, 4, 1)
+
+        self.setLayout(layout)
+
+    def type_changed(self, index):
+        self.bonus_edit.setEnabled(index == 1)
+
+
+    def add_depositor(self):
+        name = self.name_edit.text()
+        deposit_type = self.type_combo.currentText()
+        try:
+            amount = float(self.amount_edit.text())
+            if amount > 1_000_000:
+                QMessageBox.warning(self, "Ошибка", "Сумма вклада не может быть больше 1 000 000")
+                return
+        except ValueError:
+            QMessageBox.warning(self, "Ошибка", "Введите корректную сумму вклада")
+            return
+        if not name:
+            QMessageBox.warning(self, "Ошибка", "Имя вкладчика не может быть пустым")
+            return
+        bonus = 0.0
+        if deposit_type == "Бонусный":
+            try:
+                bonus = float(self.bonus_edit.text())
+                if bonus > 1_000_000:
+                    QMessageBox.warning(self, "Ошибка", "Сумма бонуса не может быть больше   1000000")
+                    return
+            except ValueError:
+                QMessageBox.warning(self, "Ошибка", "Введите корректную сумму бонуса")
+                return
+        self.main_window.add_depositor(name, deposit_type, amount, bonus)
+        self.close()
+        self.clear_fields()
+        self.close()
+
+    def clear_fields(self):
+        self.name_edit.clear()
+        self.type_combo.setCurrentIndex(0)
+        self.amount_edit.clear()
+        self.bonus_edit.clear()
+
+class Information(QDialog):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("О создателе")
+        info_label = QLabel("Создатель: Герасименко Екатерина")
+        back_button = QPushButton("Вернуться назад")
+        back_button.clicked.connect(self.close)
+
+        layout = QVBoxLayout()
+        layout.addWidget(info_label)
+        layout.addWidget(back_button)
+        self.setLayout(layout)
+
+class Summa(QDialog):
+    def __init__(self, total_amount):
+        super().__init__()
+        self.setWindowTitle("Общая сумма вкладов")
+        layout = QVBoxLayout()
+        label = QLabel(f"Общая сумма вкладов: {total_amount:.2f}")
+        font = QFont()
+        font.setPointSize(16)
+        font.setBold(True)
+        label.setFont(font)
+        layout.addWidget(label)
+        self.setLayout(layout)
+
+
+class MainWindow(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Информация о вкладчиках")
+
+        self.conn = sqlite3.connect("depositors.db")
+        self.create_table()
+
+        self.table = QTableWidget()
+        self.table.setColumnCount(5)
+        self.table.setHorizontalHeaderLabels(["Имя", "Тип", "Сумма", "Бонус", "Общая сумма"])
+        self.setCentralWidget(self.table)
+
+        self.action_combo = QComboBox()
+        self.action_combo.addItems([
+            "Выберите действие",
+            "Сортировать по имени",
+            "Добавить вкладчика",
+            "Удалить вкладчика",
+            "Общая сумма вкладов",
+            "Сохранить в файл",
+            "Загрузить из файла",
+            "О создателе",
+        ])
+        self.action_combo.currentIndexChanged.connect(self.handle_action_selection)
+
+        close_button = QPushButton("Закрыть")
+        close_button.clicked.connect(QApplication.instance().quit)
+
+        control_layout = QHBoxLayout()
+        control_layout.addWidget(self.action_combo)
+        control_layout.addWidget(close_button)
+
+        main_layout = QVBoxLayout()
+        main_layout.addLayout(control_layout)
+        main_layout.addWidget(self.table)
+
+        central_widget = QWidget()
+        central_widget.setLayout(main_layout)
+        self.setCentralWidget(central_widget)
+
+        self.add_window = AddDepositorWindow(self)
+        self.inf_window = None
+        self.summa_window = None
+        self.show_depositors()
+
+    def show_inf(self):
+        if self.inf_window is None:
+            self.inf_window = Information()
+        self.inf_window.show()
+
+    def create_table(self):
+        cursor = self.conn.cursor()
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS depositors (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT UNIQUE,
+                type TEXT,
+                amount REAL,
+                bonus REAL
+            )
+        ''')
+        self.conn.commit()
+
+    def handle_action_selection(self, index):
+        if index == 0:
+            return
+        elif index == 1:
+            self.sort_depositors()
+        elif index == 2:
+            self.show_add_window()
+        elif index == 3:
+            self.delete_depositor()
+        elif index == 4:
+            self.calculate_total_amount()
+        elif index == 5:
+            self.save_to_file()
+        elif index == 6:
+            self.load_from_file()
+        elif index == 7:
+            self.show_inf()
+
+        self.action_combo.setCurrentIndex(0)
+
+    def show_add_window(self):
+        self.add_window.show()
+
+    def add_depositor(self, name, deposit_type, amount, bonus):
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute('''
+                INSERT INTO depositors (name, type, amount, bonus)
+                VALUES (?, ?, ?, ?)
+            ''', (name, deposit_type, amount, bonus))
+            self.conn.commit()
+            self.show_depositors()
+        except sqlite3.IntegrityError:
+            QMessageBox.warning(self, "Ошибка", "Вкладчик с таким именем уже существует")
+
+    def show_depositors(self):
+        cursor = self.conn.cursor()
+        cursor.execute('SELECT name, type, amount, bonus, (amount + bonus) AS total FROM depositors')
+        depositors = cursor.fetchall()
+
+        self.table.setRowCount(len(depositors))
+        for i, depositor in enumerate(depositors):
+            for j, value in enumerate(depositor):
+                self.table.setItem(i, j, QTableWidgetItem(str(value)))
+
+    def delete_depositor(self):
+        selected_rows = self.table.selectedItems()
+        if not selected_rows:
+            QMessageBox.warning(self, "Ошибка", "Выберите вкладчика для удаления")
+            return
+        row = selected_rows[0].row()
+        name = self.table.item(row, 0).text()
+
+        cursor = self.conn.cursor()
+        cursor.execute('DELETE FROM depositors WHERE name = ?', (name,))
+        self.conn.commit()
+        self.show_depositors()
+
+    def sort_depositors(self):
+        cursor = self.conn.cursor()
+        cursor.execute('SELECT name, type, amount, bonus, (amount + bonus) AS total FROM depositors ORDER BY name')
+        depositors = cursor.fetchall()
+
+        self.table.setRowCount(len(depositors))
+        for i, depositor in enumerate(depositors):
+            for j, value in enumerate(depositor):
+                self.table.setItem(i, j, QTableWidgetItem(str(value)))
+
+    def calculate_total_amount(self):
+        cursor = self.conn.cursor()
+        cursor.execute('SELECT SUM(amount + bonus) FROM depositors')
+        total_amount = cursor.fetchone()[0] or 0.0
+
+        if self.summa_window is None:
+            self.summa_window = Summa(total_amount)
+        else:
+            self.summa_window.close()
+            self.summa_window = Summa(total_amount)
+        self.summa_window.show()
+
+    def save_to_file(self):
+        options = QFileDialog.Options()
+        file_path, _ = QFileDialog.getSaveFileName(self, "Сохранить файл", "", "Text Files (*.txt);;All Files (*)", options=options)
+        if not file_path:
+            return
+
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute('SELECT name, type, amount, bonus, (amount + bonus) AS total FROM depositors')
+            depositors = cursor.fetchall()
+
+            column_widths = [20, 15, 12, 12, 15]
+
+            def format_row(row):
+                return "".join(f"{str(value):<{width}}" for value, width in zip(row, column_widths))
+
+            with open(file_path, 'w', encoding='utf-8') as file:
+                headers = ["Имя", "Тип", "Сумма", "Бонус", "Общая сумма"]
+                file.write(format_row(headers) + "\n")
+                file.write("-" * sum(column_widths) + "\n")
+
+                for depositor in depositors:
+                    file.write(format_row(depositor) + "\n")
+
+            QMessageBox.information(self, "Успех", "Таблица вкладчиков успешно сохранена!")
+        except Exception as e:
+            QMessageBox.critical(self, "Ошибка", f"Не удалось сохранить файл: {e}")
+
+    def load_from_file(self):
+        options = QFileDialog.Options()
+        file_path, _ = QFileDialog.getOpenFileName(self, "Открыть файл", "", "Text Files (*.txt);;All Files (*)",
+                                                   options=options)
+        if not file_path:
+            return
+
+        try:
+            column_widths = [20, 15, 12, 12, 15]
+            start_indices = [0]
+            for width in column_widths[:-1]:
+                start_indices.append(start_indices[-1] + width)
+            with open(file_path, 'r', encoding='utf-8') as file:
+                lines = file.readlines()
+
+                if len(lines) > 1 and lines[0].startswith("Имя"):
+                    lines = lines[2:]
+
+                cursor = self.conn.cursor()
+                for line in lines:
+                    line = line.rstrip()
+                    values = [line[start:start + width].strip() for start, width in zip(start_indices, column_widths)]
+                    if len(values) != 5:
+                        QMessageBox.warning(self, "Ошибка", f"Некорректная строка, она не будет учитываться: {line}")
+                        continue
+
+                    name, deposit_type, amount, bonus, total = values
+                    try:
+                        cursor.execute('''
+                            INSERT INTO depositors (name, type, amount, bonus)
+                            VALUES (?, ?, ?, ?)
+                        ''', (name, deposit_type, float(amount), float(bonus)))
+                    except sqlite3.IntegrityError:
+                        QMessageBox.warning(self, "Ошибка", f"Вкладчик с именем {name} уже существует")
+                    except ValueError:
+                        QMessageBox.warning(self, "Ошибка", f"Некорректные числовые значения в строке: {line}")
+
+                self.conn.commit()
+                self.show_depositors()
+                QMessageBox.information(self, "Успех", "Данные успешно загружены из файла!")
+        except Exception as e:
+            QMessageBox.critical(self, "Ошибка", f"Не удалось загрузить файл: {e}")
+
+if __name__ == "__main__":
+    app = QApplication(sys.argv)
+    window = MainWindow()
+    window.show()
+    sys.exit(app.exec_())
